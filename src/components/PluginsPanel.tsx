@@ -161,6 +161,7 @@ export function PluginsPanel() {
   const polls = useRef(new Map<string, () => void>());
   const statusGenerations = useRef(new Map<string, number>());
   const latestStatusRequests = useRef(new Map<string, number>());
+  const catalogRequests = useRef(0);
   const opening = useRef<ReturnType<typeof reserveConnectionPage> | null>(null);
 
   /** A connection that finished or failed since a request no newer than this one no longer needs its sign-in page. */
@@ -234,6 +235,30 @@ export function PluginsPanel() {
       });
   }, [refreshConnectedStatus]);
 
+  // The catalog's configured/mode/setup decide whether the connect buttons are enabled at all,
+  // so it must be re-readable: it used to load once on mount, and a connector service configured
+  // (or recovered) while the panel stayed open left every button gray until the panel was closed
+  // and reopened. A failed reload keeps the previous state instead of pretending the service is
+  // ready, and an older in-flight response never overwrites a newer one.
+  const loadCatalog = useCallback(() => {
+    const request = ++catalogRequests.current;
+    return api("/api/connectors/catalog")
+      .then((r) => {
+        if (catalogRequests.current !== request) return;
+        setCards(r.cards ?? []);
+        setSource(r.source ?? "curated");
+        setPagination(r.pagination ?? null);
+        setConfigured(Boolean(r.configured));
+        setMode(r.mode ?? "unavailable");
+        setSetup(r.setup);
+      })
+      .catch((e) => {
+        if (catalogRequests.current !== request) return;
+        setCards((current) => current ?? []);
+        setError(lacksAdminScope(e) ? { key: "connectors.adminOnly" } : e.message);
+      });
+  }, []);
+
   useEffect(() => () => {
     opening.current?.cancel();
     opening.current = null;
@@ -247,27 +272,13 @@ export function PluginsPanel() {
   }, [inventoryPhase, stale, status]);
 
   useEffect(() => {
-    let alive = true;
     void loadConnectionInventory();
-    api("/api/connectors/catalog")
-      .then((r) => {
-        if (!alive) return;
-        setCards(r.cards ?? []);
-        setSource(r.source ?? "curated");
-        setPagination(r.pagination ?? null);
-        setConfigured(Boolean(r.configured));
-        setMode(r.mode ?? "unavailable");
-        setSetup(r.setup);
-      })
-      .catch((e) => {
-        if (!alive) return;
-        setCards((current) => current ?? []);
-        setError(lacksAdminScope(e) ? { key: "connectors.adminOnly" } : e.message);
-      });
+    void loadCatalog();
     return () => {
-      alive = false;
+      // A catalog response still in flight when the panel unmounts must not land.
+      catalogRequests.current += 1;
     };
-  }, [loadConnectionInventory]);
+  }, [loadConnectionInventory, loadCatalog]);
 
   useEffect(() => {
     const returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -504,7 +515,7 @@ export function PluginsPanel() {
                 <ChevronRight size={14} aria-hidden="true" className="shrink-0 rtl:-scale-x-100" />
               </button>
               <button
-                onClick={() => { setCardsRefresh((value) => value + 1); void loadConnectionInventory(true); }}
+                onClick={() => { setCardsRefresh((value) => value + 1); void loadConnectionInventory(true); void loadCatalog(); }}
                 disabled={refreshing}
                 className="flex size-8 items-center justify-center rounded-full text-ink-secondary hover:bg-raised hover:text-ink disabled:opacity-50"
                 title={t("connectors.refreshTitle")}
@@ -718,7 +729,7 @@ export function PluginsPanel() {
                           <button
                             type="button"
                             disabled={refreshing}
-                            onClick={() => void loadConnectionInventory(true)}
+                            onClick={() => { void loadConnectionInventory(true); void loadCatalog(); }}
                             className={cn(pill, "mt-4 bg-raised text-ink hover:bg-raised-hover disabled:opacity-50")}
                           >
                             <RefreshCw size={14} className={cn(refreshing && "animate-spin")} />
