@@ -7,7 +7,7 @@ import { AuditLog, auditArgs, auditRequest, verifyAudit, type AuditLine } from "
 import { jobDesk } from "../src/jobs.ts";
 import { localJobId, sendLocalJob, serveLocalJobs } from "../src/local.ts";
 import { parsePolicy } from "../src/policy.ts";
-import type { Job, JobReply } from "../src/protocol.ts";
+import { JOB_TYPES, type Job, type JobReply } from "../src/protocol.ts";
 
 const HOME = `ghcr.io/milind-soni/openmausbot-cloud-home@sha256:${"a".repeat(64)}`;
 const SECRET = "Bootstrap-secret-0123456789abcdefghijklmnopq";
@@ -164,4 +164,54 @@ describe.skipIf(process.platform === "win32")("jobs from root on this server", (
   function reply(job: Job): JobReply {
     return { id: job.id, ok: true, result: { home: { state: "running", image: HOME, health: null }, previousImage: null, snapshot: null } } as JobReply;
   }
+});
+
+describe("auditArgs against secrets", () => {
+  // What auditArgs may emit, by job type: anything else it must drop, whatever the job carried.
+  const ALLOWED: Record<string, string[]> = {
+    start: ["image", "env"],
+    update: ["image"],
+    "self-update": ["image"],
+    restore: ["backupId"],
+    "import-disk": ["from"],
+    stop: [],
+    restart: [],
+    status: [],
+    backup: [],
+    "export-disk": [],
+    "host-health": [],
+  };
+
+  it("drops the arguments of a job type it does not know, whatever they carry", () => {
+    const unknown = {
+      id: "u1",
+      type: "run-command",
+      args: { command: "cat /etc/shadow", token: SECRET, password: SECRET },
+    } as unknown as Job;
+    expect(auditArgs(unknown)).toEqual({});
+    expect(JSON.stringify(auditArgs(unknown))).not.toContain(SECRET);
+    expect(JSON.stringify(auditArgs(unknown))).not.toContain("cat /etc/shadow");
+  });
+
+  it("emits only allowlisted fields, and never a planted secret, for every job type", () => {
+    const planted = {
+      image: HOME,
+      env: { OMB_PUBLIC_URL: "https://acme.example", OMB_CLOUD_BOOTSTRAP_SECRET: SECRET },
+      backupId: "20261028-104512-3fa9",
+      url: "https://bucket.example/home.tar.gz",
+      token: SECRET,
+      password: SECRET,
+    };
+    for (const type of JOB_TYPES) {
+      const out = auditArgs({ id: "p1", type, args: planted } as unknown as Job);
+      expect(JSON.stringify(out)).not.toContain(SECRET);
+      for (const [key, value] of Object.entries(out)) {
+        expect(ALLOWED[type]).toContain(key);
+        if (key === "image") expect(String(value)).toMatch(/^ghcr\.io\//);
+        if (key === "env") expect(value).toEqual(["OMB_CLOUD_BOOTSTRAP_SECRET", "OMB_PUBLIC_URL"]);
+        if (key === "from") expect(String(value)).toBe("https://bucket.example");
+        if (key === "backupId") expect(String(value)).toBe("20261028-104512-3fa9");
+      }
+    }
+  });
 });
