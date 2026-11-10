@@ -35,8 +35,15 @@ export function auditArgs(job: Job): Record<string, unknown> {
       return { image: args.image, env: Object.keys((args.env ?? {}) as Record<string, string>).sort() };
     case "import-disk":
       return { from: new URL(String(args.url)).origin };
+    case "update":
+    case "self-update":
+      return { image: args.image };
+    case "restore":
+      return { backupId: args.backupId };
+    // stop, restart, status, backup, export-disk and host-health take no arguments, and a type
+    // this switch does not name gets nothing: the audit never copies arguments it cannot vouch for.
     default:
-      return { ...args };
+      return {};
   }
 }
 
